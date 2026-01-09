@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 
 # =========================================================
 # GLOBAL DATE CONSTRAINTS
@@ -25,7 +25,7 @@ st.title("Crypto Volatility Backtest Dashboard")
 st.markdown("Adjust the **Time Period** and **Strategy Parameters** in the sidebar, then click **Run**.")
 
 # =========================================================
-# DATA PATHS
+# DATA PATHS (DAILY)
 # =========================================================
 
 RETURN_PATH = "daily_returns.csv"
@@ -55,44 +55,49 @@ df_return_full, df_volume_full, df_mcap_full = load_and_process_data(
 )
 
 # =========================================================
-# METRICS (UNCHANGED)
+# METRICS (IDENTICAL TO MOMENTUM STYLE)
 # =========================================================
 
-def infer_periods_per_year(index):
+def infer_periods_per_year(index: pd.DatetimeIndex) -> float:
     diffs = index.to_series().diff().dt.days.dropna()
     if diffs.empty:
         return np.nan
     return 365.25 / diffs.median()
 
-def cagr(nav):
-    nav = nav.dropna()
-    if len(nav) < 2:
+def cagr(series):
+    series = series.dropna()
+    if len(series) < 2:
         return np.nan
-    years = (nav.index[-1] - nav.index[0]).days / 365.25
-    if years <= 0:
+    start, end = series.iloc[0], series.iloc[-1]
+    years = (series.index[-1] - series.index[0]).days / 365.25
+    if years <= 0 or start <= 0:
         return np.nan
-    return (nav.iloc[-1] / nav.iloc[0]) ** (1 / years) - 1
+    return (end / start) ** (1 / years) - 1
 
-def ann_std(ret):
-    ret = ret.dropna()
-    if len(ret) < 2:
+def ann_std(series):
+    series = series.dropna()
+    if len(series) < 2:
         return np.nan
-    ppy = infer_periods_per_year(ret.index)
-    if pd.isna(ppy):
-        return np.nan
-    return ret.std() * np.sqrt(ppy)
+    ppy = infer_periods_per_year(series.index)
+    return series.std() * np.sqrt(ppy)
 
 def max_drawdown(nav):
     nav = nav.dropna()
     roll_max = nav.cummax()
-    return ((nav - roll_max) / roll_max).min()
+    dd = (nav - roll_max) / roll_max
+    return dd.min()
 
 # =========================================================
-# LOW VOL BACKTEST (LOGIC UNCHANGED)
+# LOW VOL BACKTEST (NO CLEAN_N)
 # =========================================================
 
 @st.cache_data(show_spinner=False)
-def run_backtest_low_vol(df_return, df_aux, weighting, params):
+def run_backtest_low_vol(
+    data_ret: pd.DataFrame,
+    data_aux: pd.DataFrame,
+    weighting: str,
+    params: Dict[str, Any]
+) -> pd.DataFrame:
 
     lookback_n  = params["lookback_n"]
     skip_n      = params["skip_n"]
@@ -102,22 +107,24 @@ def run_backtest_low_vol(df_return, df_aux, weighting, params):
 
     total_n = lookback_n + skip_n + holding_n
 
-    if len(df_return) < total_n:
+    if len(data_ret) < total_n:
         return pd.DataFrame()
 
     results = []
 
-    for i in range(total_n - 1, len(df_return), holding_n):
+    for i in range(total_n - 1, len(data_ret), holding_n):
 
-        ret_window = df_return.iloc[i - (total_n - 1): i + 1]
+        ret_window = data_ret.iloc[i - (total_n - 1): i + 1]
 
+        # -----------------------------
         # Universe filtering
+        # -----------------------------
         if weighting == "Equal":
             valid_cols = ret_window.columns[ret_window.notna().all()]
             full_window = ret_window[valid_cols]
             aux_window = None
         else:
-            aux_window = df_aux.loc[ret_window.index]
+            aux_window = data_aux.loc[ret_window.index]
             common_cols = ret_window.columns.intersection(aux_window.columns)
 
             ret_sub = ret_window[common_cols]
@@ -133,7 +140,12 @@ def run_backtest_low_vol(df_return, df_aux, weighting, params):
             full_window = ret_sub[valid_cols]
             aux_window = aux_sub[valid_cols]
 
-        # Kill-bottom filter
+        if len(valid_cols) == 0:
+            continue
+
+        # -----------------------------
+        # Kill bottom filter
+        # -----------------------------
         if kill_bottom > 0 and aux_window is not None:
             signal_date = ret_window.index[lookback_n - 1]
             aux_vals = aux_window.loc[signal_date]
@@ -149,14 +161,18 @@ def run_backtest_low_vol(df_return, df_aux, weighting, params):
             aux_window = aux_window[survivors]
             valid_cols = survivors
 
-        # LOW VOL SIGNAL (RAW STD)
+        # -----------------------------
+        # LOW VOL SIGNAL
+        # -----------------------------
         lookback_data = full_window.iloc[:lookback_n]
         vol = lookback_data.std(ddof=0)
 
         low_vol  = vol.nsmallest(portfolio_n).index
         high_vol = vol.nlargest(portfolio_n).index
 
+        # -----------------------------
         # Holding returns
+        # -----------------------------
         holding_data = full_window.iloc[lookback_n + skip_n:]
 
         ret_low  = (1 + holding_data[low_vol]).prod() - 1
@@ -198,7 +214,7 @@ def run_backtest_low_vol(df_return, df_aux, weighting, params):
     return df
 
 # =========================================================
-# SIDEBAR
+# SIDEBAR (MATCHES MOMENTUM STRUCTURE)
 # =========================================================
 
 with st.sidebar:
@@ -218,13 +234,18 @@ with st.sidebar:
     holding_n   = st.slider("Holding Period (Days)", 1, 100, 7)
     portfolio_n = st.slider("Portfolio Size", 2, 60, 10)
 
-    kill_mcap = st.number_input("Kill Bottom Market Cap (%)", 0.0, 10.0, 2.0) / 100
-    kill_vol  = st.number_input("Kill Bottom Volume (%)", 0.0, 10.0, 2.0) / 100
+    kill_mcap = st.number_input(
+        "Kill Bottom Market Cap (%)", 0.0, 10.0, 2.0
+    ) / 100.0
+
+    kill_vol = st.number_input(
+        "Kill Bottom Volume (%)", 0.0, 10.0, 2.0
+    ) / 100.0
 
     run_button = st.button("Run")
 
 # =========================================================
-# RUN + OUTPUT (MATCHES MOMENTUM UI)
+# RUN + OUTPUT (COPIED FROM MOMENTUM, ONLY LABELS CHANGED)
 # =========================================================
 
 if run_button:
@@ -233,6 +254,16 @@ if run_button:
     df_volume = df_volume_full.loc[start_date:end_date]
     df_mcap   = df_mcap_full.loc[start_date:end_date]
 
+    backtest_cases = {
+        "Equally Weighted": (None, "Equal", 0.0),
+        "Volume Weighted": (df_volume, "Volume", 0.0),
+        "Volume Weighted (with kill filters)": (df_volume, "Volume", kill_vol),
+        "Market Cap Weighted": (df_mcap, "MktCap", 0.0),
+        "Market Cap Weighted (with kill filters)": (df_mcap, "MktCap", kill_mcap),
+    }
+
+    all_dfs = {}
+
     params = {
         "lookback_n": lookback_n,
         "skip_n": skip_n,
@@ -240,75 +271,86 @@ if run_button:
         "portfolio_n": portfolio_n,
     }
 
-    cases = {
-        "Equal Weight": (None, "Equal", 0.0),
-        "Volume Weight": (df_volume, "Volume", 0.0),
-        "Volume Weight (Filtered)": (df_volume, "Volume", kill_vol),
-        "Market Cap Weight": (df_mcap, "MktCap", 0.0),
-        "Market Cap Weight (Filtered)": (df_mcap, "MktCap", kill_mcap),
-    }
+    with st.spinner("Running Backtests..."):
+        for name, (aux, wt, filt) in backtest_cases.items():
+            params["kill_bottom_filter"] = filt
+            df = run_backtest_low_vol(df_return, aux, wt, params)
+            all_dfs[name] = df
 
-    all_dfs = {}
-    for name, (aux, wt, filt) in cases.items():
-        params["kill_bottom_filter"] = filt
-        all_dfs[name] = run_backtest_low_vol(df_return, aux, wt, params)
-
-    CUSTOM_COLORS   = ["#1f77b4", "#7f7f7f", "#d62728"]
-    CUSTOM_COLORS_2 = ["#1f77b4", "#d62728"]
+    st.success("Backtests complete! Review results below.")
 
     keys = list(all_dfs.keys())
+    CUSTOM_COLORS = ["#1f77b4", "#7f7f7f", "#d62728"]
+    CUSTOM_COLORS_2 = ["#1f77b4", "#d62728"]
+    num_total_backtests = len(keys)
 
-    for idx, name in enumerate(keys):
+    for index, name in enumerate(keys):
 
-        df = all_dfs[name]
+        momentum_df = all_dfs[name]
 
         with st.container():
 
             st.markdown("---")
-            st.markdown(f"## ({idx + 1} / {len(keys)}) {name}")
+            st.markdown(f"## ({index + 1} / {num_total_backtests}) {name}:")
 
-            if df.empty:
-                st.warning("Insufficient data.")
+            if momentum_df.empty:
+                st.warning("Not enough successful rebalancing points.")
                 continue
 
             col1, col2, col3 = st.columns([1.5, 1, 1])
 
-            # SUMMARY TABLE
+            # ---------------- SUMMARY TABLE ----------------
             with col1:
-
                 st.markdown("##### 1. Summary Statistics")
 
-                time_span_days = (df.index[-1] - df.index[0]).days
+                time_span_days = (momentum_df.index[-1] - momentum_df.index[0]).days
+
                 windows = {
-                    "1Y": 365, "3Y": 365*3, "5Y": 365*5, "7Y": 365*7, "All Time": time_span_days
+                    "1Y": 365,
+                    "3Y": 365 * 3,
+                    "5Y": 365 * 5,
+                    "7Y": 365 * 7,
+                    "All Time": time_span_days
                 }
 
                 strategies = {
                     "Low Vol": ("Low_Vol_NAV", "Low_Vol_Return"),
                     "High Vol": ("High_Vol_NAV", "High_Vol_Return"),
-                    "Benchmark": ("Benchmark_NAV", "Benchmark"),
+                    "Benchmark": ("Benchmark_NAV", "Benchmark")
                 }
 
                 rows = []
 
                 for label, days in windows.items():
 
-                    end_dt = df.index[-1]
-                    start_dt = df.index[0] if label == "All Time" else end_dt - pd.Timedelta(days=days)
-                    df_win = df.loc[df.index >= start_dt]
+                    if label != "All Time" and time_span_days < days:
+                        row = {"Window": label}
+                        for strat in strategies:
+                            for metric in ["Return", "Risk", "Sharpe", "MDD"]:
+                                row[f"{strat}_{metric}"] = np.nan
+                        rows.append(row)
+                        continue
 
+                    end_date_win = momentum_df.index[-1]
+                    start_date_win = (
+                        momentum_df.index[0]
+                        if label == "All Time"
+                        else end_date_win - pd.Timedelta(days=days)
+                    )
+
+                    df_win = momentum_df.loc[momentum_df.index >= start_date_win]
                     row = {"Window": label}
 
                     for strat, (nav_col, ret_col) in strategies.items():
-                        nav = df_win[nav_col]
-                        ret = df_win[ret_col]
+                        nav = df_win[nav_col].dropna()
+                        ret = df_win[ret_col].dropna()
 
-                        if len(nav) < 2:
+                        if nav.empty or len(ret) < 2:
                             r = s = sharpe = mdd = np.nan
                         else:
                             r = cagr(nav)
                             s = ann_std(ret)
-                            sharpe = r / s if (pd.notna(s) and s != 0) else np.nan
+                            sharpe = r / s if s != 0 else np.nan
                             mdd = max_drawdown(nav)
 
                         row[f"{strat}_Return"] = r
@@ -321,26 +363,35 @@ if run_button:
                 summary = pd.DataFrame(rows).set_index("Window")
 
                 summary_fmt = summary.copy()
-                for c in summary_fmt.columns:
-                    if "Sharpe" in c:
-                        summary_fmt[c] = summary_fmt[c].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "-")
+                for col in summary_fmt.columns:
+                    if "Sharpe" in col:
+                        summary_fmt[col] = summary_fmt[col].apply(
+                            lambda x: f"{x:.2f}" if pd.notna(x) else "-"
+                        )
                     else:
-                        summary_fmt[c] = summary_fmt[c].apply(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "-")
+                        summary_fmt[col] = summary_fmt[col].apply(
+                            lambda x: f"{x*100:.1f}%" if pd.notna(x) else "-"
+                        )
 
-                summary_fmt.columns = pd.MultiIndex.from_tuples(
-                    [tuple(c.split("_")) for c in summary_fmt.columns]
-                )
+                mi_cols = [tuple(col.split("_")) for col in summary_fmt.columns]
+                summary_fmt.columns = pd.MultiIndex.from_tuples(mi_cols)
 
                 st.dataframe(summary_fmt)
 
-            # NAV CHART
+            # ---------------- NAV CHART ----------------
             with col2:
-                nav = df[["Low_Vol_NAV", "High_Vol_NAV", "Benchmark_NAV"]]
-                nav.columns = ["Low Vol", "High Vol", "Benchmark"]
-                st.line_chart(nav, color=CUSTOM_COLORS)
+                st.markdown("##### 2. NAV Comparison (Base: 100)")
+                nav_data = momentum_df[
+                    ["Low_Vol_NAV", "High_Vol_NAV", "Benchmark_NAV"]
+                ]
+                nav_data.columns = ["Low Vol", "High Vol", "Benchmark"]
+                st.line_chart(nav_data, color=CUSTOM_COLORS)
 
-            # COUNTS
+            # ---------------- COIN COUNT ----------------
             with col3:
-                cnt = df[["Portfolio_N", "Filtered_Universe_N"]]
-                cnt.columns = ["Portfolio Size", "Universe Size"]
-                st.line_chart(cnt, color=CUSTOM_COLORS_2)
+                st.markdown("##### 3. Coin Count Over Time")
+                count_data = momentum_df[
+                    ["Portfolio_N", "Filtered_Universe_N"]
+                ]
+                count_data.columns = ["Portfolio Size (N)", "Filtered Universe Size"]
+                st.line_chart(count_data, color=CUSTOM_COLORS_2)
