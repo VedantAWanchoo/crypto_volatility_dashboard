@@ -69,7 +69,7 @@ def cagr(nav: pd.Series) -> float:
     nav = nav.dropna()
     if len(nav) < 2:
         return np.nan
-    years = (nav.index[-1] - nav.index[0]). / 365.25
+    years = (nav.index[-1] - nav.index[0]).days / 365.25
     if years <= 0:
         return np.nan
     return (nav.iloc[-1] / nav.iloc[0]) ** (1 / years) - 1
@@ -301,3 +301,4 @@ if run_button:
 
 
 # cd "C:\\Users\\Vedant Wanchoo\\Desktop\\CGS 2020\\Crypto\\CoinDCX Application\\Trial" ; streamlit run crypto_volatility_dashboard.py
+
