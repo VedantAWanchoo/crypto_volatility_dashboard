@@ -5,7 +5,7 @@ import datetime
 from typing import Dict, Any
 
 # =========================================================
-# GLOBAL DATE CONSTRAINTS (unchanged)
+# GLOBAL DATE CONSTRAINTS
 # =========================================================
 
 GLOBAL_MIN_DATE = datetime.date(2017, 8, 20)
@@ -22,11 +22,10 @@ st.set_page_config(
 )
 
 st.title("Crypto Volatility Backtest Dashboard")
-
 st.markdown("Adjust the **Time Period** and **Strategy Parameters** in the sidebar, then click **Run**.")
 
 # =========================================================
-# DATA PATHS — EXACTLY AS IN NOTEBOOK
+# DATA PATHS
 # =========================================================
 
 RETURN_PATH = "daily_returns.csv"
@@ -34,7 +33,7 @@ VOLUME_PATH = "daily_volumes.csv"
 MCAP_PATH   = "daily_mcap.csv"
 
 # =========================================================
-# DATA LOADING (faithful to notebook)
+# DATA LOADING
 # =========================================================
 
 @st.cache_data
@@ -56,16 +55,16 @@ df_return_full, df_volume_full, df_mcap_full = load_and_process_data(
 )
 
 # =========================================================
-# METRICS — FREQUENCY AWARE (NO HARDCODING)
+# METRICS (UNCHANGED)
 # =========================================================
 
-def infer_periods_per_year(index: pd.DatetimeIndex) -> float:
+def infer_periods_per_year(index):
     diffs = index.to_series().diff().dt.days.dropna()
     if diffs.empty:
         return np.nan
     return 365.25 / diffs.median()
 
-def cagr(nav: pd.Series) -> float:
+def cagr(nav):
     nav = nav.dropna()
     if len(nav) < 2:
         return np.nan
@@ -74,7 +73,7 @@ def cagr(nav: pd.Series) -> float:
         return np.nan
     return (nav.iloc[-1] / nav.iloc[0]) ** (1 / years) - 1
 
-def ann_std(ret: pd.Series) -> float:
+def ann_std(ret):
     ret = ret.dropna()
     if len(ret) < 2:
         return np.nan
@@ -83,22 +82,17 @@ def ann_std(ret: pd.Series) -> float:
         return np.nan
     return ret.std() * np.sqrt(ppy)
 
-def max_drawdown(nav: pd.Series) -> float:
+def max_drawdown(nav):
     nav = nav.dropna()
     roll_max = nav.cummax()
     return ((nav - roll_max) / roll_max).min()
 
 # =========================================================
-# LOW-VOL BACKTEST — CLEAN_N REMOVED
+# LOW VOL BACKTEST (LOGIC UNCHANGED)
 # =========================================================
 
 @st.cache_data(show_spinner=False)
-def run_backtest_low_vol(
-    df_return: pd.DataFrame,
-    df_aux: pd.DataFrame,
-    weighting: str,
-    params: Dict[str, Any]
-) -> pd.DataFrame:
+def run_backtest_low_vol(df_return, df_aux, weighting, params):
 
     lookback_n  = params["lookback_n"]
     skip_n      = params["skip_n"]
@@ -117,9 +111,7 @@ def run_backtest_low_vol(
 
         ret_window = df_return.iloc[i - (total_n - 1): i + 1]
 
-        # -------------------------------------------------
         # Universe filtering
-        # -------------------------------------------------
         if weighting == "Equal":
             valid_cols = ret_window.columns[ret_window.notna().all()]
             full_window = ret_window[valid_cols]
@@ -141,12 +133,7 @@ def run_backtest_low_vol(
             full_window = ret_sub[valid_cols]
             aux_window = aux_sub[valid_cols]
 
-       # if len(valid_cols) < portfolio_n:
-       #     continue
-
-        # -------------------------------------------------
         # Kill-bottom filter
-        # -------------------------------------------------
         if kill_bottom > 0 and aux_window is not None:
             signal_date = ret_window.index[lookback_n - 1]
             aux_vals = aux_window.loc[signal_date]
@@ -162,18 +149,14 @@ def run_backtest_low_vol(
             aux_window = aux_window[survivors]
             valid_cols = survivors
 
-        # -------------------------------------------------
-        # LOW VOL SIGNAL
-        # -------------------------------------------------
+        # LOW VOL SIGNAL (RAW STD)
         lookback_data = full_window.iloc[:lookback_n]
         vol = lookback_data.std(ddof=0)
 
         low_vol  = vol.nsmallest(portfolio_n).index
         high_vol = vol.nlargest(portfolio_n).index
 
-        # -------------------------------------------------
-        # Holding-period returns
-        # -------------------------------------------------
+        # Holding returns
         holding_data = full_window.iloc[lookback_n + skip_n:]
 
         ret_low  = (1 + holding_data[low_vol]).prod() - 1
@@ -215,7 +198,7 @@ def run_backtest_low_vol(
     return df
 
 # =========================================================
-# SIDEBAR — CLEAN_N REMOVED
+# SIDEBAR
 # =========================================================
 
 with st.sidebar:
@@ -235,18 +218,13 @@ with st.sidebar:
     holding_n   = st.slider("Holding Period (Days)", 1, 100, 7)
     portfolio_n = st.slider("Portfolio Size", 2, 60, 10)
 
-    kill_mcap = st.number_input(
-        "Kill Bottom Market Cap (%)", 0.0, 10.0, 2.0
-    ) / 100.0
-
-    kill_vol = st.number_input(
-        "Kill Bottom Volume (%)", 0.0, 10.0, 2.0
-    ) / 100.0
+    kill_mcap = st.number_input("Kill Bottom Market Cap (%)", 0.0, 10.0, 2.0) / 100
+    kill_vol  = st.number_input("Kill Bottom Volume (%)", 0.0, 10.0, 2.0) / 100
 
     run_button = st.button("Run")
 
 # =========================================================
-# RUN BACKTESTS
+# RUN + OUTPUT (MATCHES MOMENTUM UI)
 # =========================================================
 
 if run_button:
@@ -270,35 +248,99 @@ if run_button:
         "Market Cap Weight (Filtered)": (df_mcap, "MktCap", kill_mcap),
     }
 
+    all_dfs = {}
     for name, (aux, wt, filt) in cases.items():
-
         params["kill_bottom_filter"] = filt
-        df = run_backtest_low_vol(df_return, aux, wt, params)
+        all_dfs[name] = run_backtest_low_vol(df_return, aux, wt, params)
 
-        st.markdown("---")
-        st.subheader(name)
+    CUSTOM_COLORS   = ["#1f77b4", "#7f7f7f", "#d62728"]
+    CUSTOM_COLORS_2 = ["#1f77b4", "#d62728"]
 
-        if df.empty:
-            st.warning("Insufficient data for this configuration.")
-            continue
+    keys = list(all_dfs.keys())
 
-        col1, col2, col3 = st.columns([1.5, 1, 1])
+    for idx, name in enumerate(keys):
 
-        with col1:
-            st.markdown("##### Recent Results")
-            st.dataframe(df.tail(10))
+        df = all_dfs[name]
 
-        with col2:
-            nav = df[["Low_Vol_NAV", "High_Vol_NAV", "Benchmark_NAV"]]
-            nav.columns = ["Low Vol", "High Vol", "Benchmark"]
-            st.line_chart(nav)
+        with st.container():
 
-        with col3:
-            cnt = df[["Portfolio_N", "Filtered_Universe_N"]]
-            cnt.columns = ["Portfolio", "Universe"]
-            st.line_chart(cnt)
+            st.markdown("---")
+            st.markdown(f"## ({idx + 1} / {len(keys)}) {name}")
 
+            if df.empty:
+                st.warning("Insufficient data.")
+                continue
 
+            col1, col2, col3 = st.columns([1.5, 1, 1])
 
-# cd "C:\\Users\\Vedant Wanchoo\\Desktop\\CGS 2020\\Crypto\\CoinDCX Application\\Trial" ; streamlit run crypto_volatility_dashboard.py
+            # SUMMARY TABLE
+            with col1:
 
+                st.markdown("##### 1. Summary Statistics")
+
+                time_span_days = (df.index[-1] - df.index[0]).days
+                windows = {
+                    "1Y": 365, "3Y": 365*3, "5Y": 365*5, "7Y": 365*7, "All Time": time_span_days
+                }
+
+                strategies = {
+                    "Low Vol": ("Low_Vol_NAV", "Low_Vol_Return"),
+                    "High Vol": ("High_Vol_NAV", "High_Vol_Return"),
+                    "Benchmark": ("Benchmark_NAV", "Benchmark"),
+                }
+
+                rows = []
+
+                for label, days in windows.items():
+
+                    end_dt = df.index[-1]
+                    start_dt = df.index[0] if label == "All Time" else end_dt - pd.Timedelta(days=days)
+                    df_win = df.loc[df.index >= start_dt]
+
+                    row = {"Window": label}
+
+                    for strat, (nav_col, ret_col) in strategies.items():
+                        nav = df_win[nav_col]
+                        ret = df_win[ret_col]
+
+                        if len(nav) < 2:
+                            r = s = sharpe = mdd = np.nan
+                        else:
+                            r = cagr(nav)
+                            s = ann_std(ret)
+                            sharpe = r / s if (pd.notna(s) and s != 0) else np.nan
+                            mdd = max_drawdown(nav)
+
+                        row[f"{strat}_Return"] = r
+                        row[f"{strat}_Risk"] = s
+                        row[f"{strat}_Sharpe"] = sharpe
+                        row[f"{strat}_MDD"] = mdd
+
+                    rows.append(row)
+
+                summary = pd.DataFrame(rows).set_index("Window")
+
+                summary_fmt = summary.copy()
+                for c in summary_fmt.columns:
+                    if "Sharpe" in c:
+                        summary_fmt[c] = summary_fmt[c].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "-")
+                    else:
+                        summary_fmt[c] = summary_fmt[c].apply(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "-")
+
+                summary_fmt.columns = pd.MultiIndex.from_tuples(
+                    [tuple(c.split("_")) for c in summary_fmt.columns]
+                )
+
+                st.dataframe(summary_fmt)
+
+            # NAV CHART
+            with col2:
+                nav = df[["Low_Vol_NAV", "High_Vol_NAV", "Benchmark_NAV"]]
+                nav.columns = ["Low Vol", "High Vol", "Benchmark"]
+                st.line_chart(nav, color=CUSTOM_COLORS)
+
+            # COUNTS
+            with col3:
+                cnt = df[["Portfolio_N", "Filtered_Universe_N"]]
+                cnt.columns = ["Portfolio Size", "Universe Size"]
+                st.line_chart(cnt, color=CUSTOM_COLORS_2)
