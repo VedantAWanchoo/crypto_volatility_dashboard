@@ -69,7 +69,7 @@ def cagr(nav: pd.Series) -> float:
     nav = nav.dropna()
     if len(nav) < 2:
         return np.nan
-    years = (nav.index[-1] - nav.index[0]).days / 365.25
+    years = (nav.index[-1] - nav.index[0]). / 365.25
     if years <= 0:
         return np.nan
     return (nav.iloc[-1] / nav.iloc[0]) ** (1 / years) - 1
@@ -230,10 +230,10 @@ with st.sidebar:
 
     st.header("Strategy Parameters")
 
-    lookback_n  = st.slider("Volatility Lookback (Days)", 2, 60, 20)
-    skip_n      = st.slider("Skip (Days)", 0, 20, 0)
-    holding_n   = st.slider("Holding Period (Days)", 1, 30, 5)
-    portfolio_n = st.slider("Portfolio Size", 2, 50, 10)
+    lookback_n  = st.slider("Volatility Lookback (Days)", 1, 400, 365)
+    skip_n      = st.slider("Skip (Days)", 0, 60, 0)
+    holding_n   = st.slider("Holding Period (Days)", 1, 100, 7)
+    portfolio_n = st.slider("Portfolio Size", 2, 60, 10)
 
     kill_mcap = st.number_input(
         "Kill Bottom Market Cap (%)", 0.0, 10.0, 2.0
@@ -297,6 +297,7 @@ if run_button:
             cnt = df[["Portfolio_N", "Filtered_Universe_N"]]
             cnt.columns = ["Portfolio", "Universe"]
             st.line_chart(cnt)
+
 
 
 # cd "C:\\Users\\Vedant Wanchoo\\Desktop\\CGS 2020\\Crypto\\CoinDCX Application\\Trial" ; streamlit run crypto_volatility_dashboard.py
